@@ -1,0 +1,104 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// 每日核心记录：体重、睡眠、训练计划/训记缓存、穿戴设备消耗（WHOOP / Apple Watch）
+model DailyLog {
+  id               String     @id @default(cuid())
+  userId           String     @default("local")
+  date             String     // YYYY-MM-DD
+
+  // 体重
+  weightKg         Float?
+  weightSource     String?    // "manual" | "whoop" | "apple_watch"
+
+  // 睡眠时间
+  sleepMinutes     Int?       // 总睡眠时长（分钟）
+  sleepStart       String?    // 入睡时间 (HH:mm 或 ISO)
+  sleepEnd         String?    // 起床时间 (HH:mm 或 ISO)
+  sleepPerformance Float?     // WHOOP 睡眠表现百分比
+  sleepSource      String?    // "manual" | "whoop" | "apple_watch"
+
+  // 穿戴设备消耗与恢复（WHOOP 主力，Apple Watch 预留）
+  totalBurnKcal    Int?       // 当日总消耗 (kcal)
+  restingCalories  Int?       // 静息消耗 (kcal)
+  activeCalories   Int?       // 活动消耗 (kcal)
+  recoveryScore    Float?     // WHOOP 恢复度 (0-100)
+  strainScore      Float?     // WHOOP 当日负荷 (0-21)
+  hrvMs            Float?     // WHOOP HRV (ms)
+  restingHr        Int?       // 静息心率 (bpm)
+  wearableSource   String?    // "manual" | "whoop" | "apple_watch"
+  wearableSyncedAt DateTime?
+
+  // 健身计划 & 训记训练记录缓存（不折算卡路里，避免双重计算）
+  planTitle        String?    // 当日训练主题（如 "胸 + 三头" 或训记计划名）
+  planItemsJson    String?    // JSON: PlanExerciseItem[]
+  planSource       String?    // "manual" | "xunji"
+  workoutSummary   String?    // JSON: XunjiWorkoutSummary[]
+  totalVolume      Float?     // 当日总训练容量 (kg)
+  workoutSyncedAt  DateTime?
+
+  notes            String?
+  meals            MealItem[]
+
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  @@unique([userId, date])
+  @@index([userId, date])
+}
+
+// 每日饮食明细（Gemini 解析或手动录入）
+model MealItem {
+  id         String   @id @default(cuid())
+  dailyLogId String
+  dailyLog   DailyLog @relation(fields: [dailyLogId], references: [id], onDelete: Cascade)
+  date       String   // YYYY-MM-DD
+
+  mealType   String   @default("meal") // "breakfast" | "lunch" | "dinner" | "snack" | "meal"
+  rawInput   String   // 用户原始描述或照片说明
+  name       String   // 整理后的菜品/食物名称
+  calories   Int      // 热量 (kcal)
+  protein    Float    // 蛋白质 (g)
+  carbs      Float    // 碳水化合物 (g)
+  fat        Float    // 脂肪 (g)
+  source     String   @default("gemini") // "gemini" | "manual"
+
+  createdAt  DateTime @default(now())
+
+  @@index([date])
+}
+
+// 穿戴设备 OAuth 授权凭证（WHOOP v2 / 预留 Apple Watch）
+model WearableConnection {
+  id             String    @id @default(cuid())
+  userId         String    @default("local")
+  provider       String    // "whoop" | "apple_watch"
+  accessToken    String?
+  refreshToken   String?
+  expiresAt      DateTime?
+  scope          String?
+  externalUserId String?
+  lastSyncedAt   DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([userId, provider])
+}
+
+// 训记训练计划本地缓存（防限频）
+model XunjiPlanCache {
+  id        String   @id @default(cuid())
+  planRef   String   @unique
+  title     String
+  status    String
+  startDate String?
+  endDate   String?
+  rawJson   String
+  syncedAt  DateTime @default(now())
+}
