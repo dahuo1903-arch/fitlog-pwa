@@ -1,11 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import {
-  DEFAULT_USER_ID,
-  ensureDailyLog,
-  getDailyLogDTO,
-} from "@/lib/daily-log";
+import { getCurrentUserId } from "@/lib/auth";
+import { ensureDailyLog, getDailyLogDTO } from "@/lib/daily-log";
 import { isValidDateStr } from "@/lib/date";
 import {
   fetchXunjiDayWorkouts,
@@ -23,6 +20,7 @@ const syncRequestSchema = z.object({
 
 export async function POST(request: Request) {
   try {
+    const userId = await getCurrentUserId();
     const body = await request.json();
     const parsed = syncRequestSchema.safeParse(body);
     if (!parsed.success || !isValidDateStr(parsed.data.date)) {
@@ -33,14 +31,14 @@ export async function POST(request: Request) {
     }
 
     const { date, syncPlans, overwriteManualPlan, force } = parsed.data;
-    const existing = await ensureDailyLog(date, DEFAULT_USER_ID);
+    const existing = await ensureDailyLog(date, userId);
 
     // 防限频检查：训记全量读取有 30 秒冷却限制
     if (!force && existing.workoutSyncedAt) {
       const elapsed = Date.now() - existing.workoutSyncedAt.getTime();
       if (elapsed < XUNJI_COOLDOWN_MS) {
         const waitSec = Math.ceil((XUNJI_COOLDOWN_MS - elapsed) / 1000);
-        const daily = await getDailyLogDTO(date, DEFAULT_USER_ID);
+        const daily = await getDailyLogDTO(date, userId);
         return NextResponse.json({
           daily,
           cached: true,
@@ -49,13 +47,14 @@ export async function POST(request: Request) {
       }
     }
 
-    // 1. 拉取当日实际训练记录
-    const { workouts, totalVolume } = await fetchXunjiDayWorkouts(date);
+    // 1. 拉取当日实际训练记录（严格使用当前用户空间的训记 Key）
+    const { workouts, totalVolume } = await fetchXunjiDayWorkouts(date, userId);
 
     // 2. 按需拉取训练计划（如果缓存为空或距离上次计划同步超过 6 小时）
     let plansSynced = 0;
     if (syncPlans) {
       const latestPlan = await prisma.xunjiPlanCache.findFirst({
+        where: { userId },
         orderBy: { syncedAt: "desc" },
         select: { syncedAt: true },
       });
@@ -63,14 +62,14 @@ export async function POST(request: Request) {
         !latestPlan || Date.now() - latestPlan.syncedAt.getTime() > 6 * 3600_000;
       if (planStale || force) {
         try {
-          plansSynced = await syncXunjiPlansToCache();
+          plansSynced = await syncXunjiPlansToCache(userId);
         } catch {
           // 计划接口失败不阻断当日训练记录入库
         }
       }
     }
 
-    const matchedPlan = await lookupXunjiPlanForDate(date);
+    const matchedPlan = await lookupXunjiPlanForDate(date, userId);
     const shouldWritePlan =
       matchedPlan !== null &&
       (overwriteManualPlan ||
@@ -78,7 +77,7 @@ export async function POST(request: Request) {
         existing.planSource === "xunji");
 
     await prisma.dailyLog.update({
-      where: { userId_date: { userId: DEFAULT_USER_ID, date } },
+      where: { userId_date: { userId, date } },
       data: {
         workoutSummary: JSON.stringify(workouts),
         totalVolume,
@@ -93,7 +92,7 @@ export async function POST(request: Request) {
       },
     });
 
-    const daily = await getDailyLogDTO(date, DEFAULT_USER_ID);
+    const daily = await getDailyLogDTO(date, userId);
     return NextResponse.json({
       daily,
       cached: false,

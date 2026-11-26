@@ -1,64 +1,73 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { DEFAULT_USER_ID } from "@/lib/daily-log";
 import {
-  SESSION_COOKIE_NAME,
-  isAccessPinEnabled,
-  verifySessionToken,
+  SPACE_COOKIE_NAME,
+  SPACE_HEADER_NAME,
+  SPACE_MAX_AGE_SECONDS,
+  createSpaceToken,
+  generateIsolatedUserId,
+  isMultiSpaceMode,
+  isSecureRequest,
+  verifySpaceToken,
 } from "@/lib/auth";
 
-const PUBLIC_API_PREFIXES = [
-  "/api/auth/",
-  "/api/wearables/apple-watch", // 自带 Bearer 密钥鉴权，供 iOS 快捷指令调用
-  "/api/whoop/callback", // WHOOP OAuth 回调，自带 state Cookie 校验
-];
-
 export function proxy(request: NextRequest) {
-  if (!isAccessPinEnabled()) {
+  const { pathname } = request.nextUrl;
+
+  // Apple Watch Webhook 和跨设备认领路由自行处理空间归属
+  if (
+    pathname.startsWith("/api/wearables/apple-watch") ||
+    pathname.startsWith("/api/space/claim")
+  ) {
     return NextResponse.next();
   }
 
-  const { pathname, search } = request.nextUrl;
-  const sessionToken = request.cookies.get(SESSION_COOKIE_NAME)?.value;
-  const session = verifySessionToken(sessionToken);
-
-  // 已解锁时访问 /unlock 直接跳回首页
+  // 旧版 /unlock 链接兼容：已去除登录密码，直接跳回首页
   if (pathname === "/unlock") {
-    if (session) {
-      return NextResponse.redirect(new URL("/", request.url));
-    }
-    return NextResponse.next();
+    return NextResponse.redirect(new URL("/", request.url));
   }
 
-  // 公开鉴权/回调接口放行
-  if (PUBLIC_API_PREFIXES.some((prefix) => pathname.startsWith(prefix))) {
-    return NextResponse.next();
+  const existingToken = request.cookies.get(SPACE_COOKIE_NAME)?.value;
+  const existingUid = verifySpaceToken(existingToken);
+
+  if (existingUid && existingToken) {
+    // 将已验签的当前空间令牌透传给服务端组件与 API
+    const requestHeaders = new Headers(request.headers);
+    requestHeaders.set(SPACE_HEADER_NAME, existingToken);
+    return NextResponse.next({
+      request: { headers: requestHeaders },
+    });
   }
 
-  if (session) {
-    return NextResponse.next();
-  }
+  // 无有效空间 Cookie 时：
+  // - 云端多用户模式：自动为新设备生成全球唯一的空白隔离空间，彻底与其他人数据隔绝
+  // - 本地单人模式：默认绑定 "local" 空间，零门槛直接读取本地数据
+  const nextUid = isMultiSpaceMode()
+    ? generateIsolatedUserId()
+    : DEFAULT_USER_ID;
+  const nextToken = createSpaceToken(nextUid);
 
-  // 未解锁的 API 请求返回 401
-  if (pathname.startsWith("/api/")) {
-    return NextResponse.json(
-      { error: "请先输入访问密码解锁 FitLog" },
-      { status: 401 }
-    );
-  }
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set(SPACE_HEADER_NAME, nextToken);
 
-  // 未解锁的页面请求跳转至 /unlock
-  const unlockUrl = new URL("/unlock", request.url);
-  if (pathname !== "/" || search) {
-    unlockUrl.searchParams.set("next", `${pathname}${search}`);
-  }
-  return NextResponse.redirect(unlockUrl);
+  const response = NextResponse.next({
+    request: { headers: requestHeaders },
+  });
+
+  response.cookies.set(SPACE_COOKIE_NAME, nextToken, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: isSecureRequest(request),
+    path: "/",
+    maxAge: SPACE_MAX_AGE_SECONDS,
+  });
+
+  return response;
 }
 
 export const config = {
   matcher: [
-    /*
-     * 放行 Next.js 静态构建资源与 PWA 清单/图标/Service Worker（iOS 安装时不携带登录 Cookie）
-     */
     "/((?!_next/static|_next/image|favicon\\.ico|manifest\\.json|sw\\.js|offline\\.html|icon\\.svg|icons/).*)",
   ],
 };

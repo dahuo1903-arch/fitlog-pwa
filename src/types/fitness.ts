@@ -89,6 +89,7 @@ export interface IntegrationStatusDTO {
   geminiConfigured: boolean;
   geminiModel: string;
   xunjiConfigured: boolean;
+  xunjiCustomKeySet: boolean;
   whoopConfigured: boolean;
   whoopConnected: boolean;
   whoopLastSyncedAt: string | null;
@@ -96,5 +97,6 @@ export interface IntegrationStatusDTO {
   appleWatchLastSyncedAt: string | null;
   lanUrls: string[];
   mdnsUrl: string | null;
-  accessPinEnabled: boolean;
+  spaceLabel: string;
+  spaceSyncPath: string;
 }

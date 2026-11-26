@@ -1,10 +1,10 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { getPublicOrigin } from "@/lib/auth";
-import { DEFAULT_USER_ID } from "@/lib/daily-log";
+import { getCurrentUserId, getPublicOrigin } from "@/lib/auth";
 import { exchangeWhoopCode } from "@/lib/whoop";
 
 export async function GET(request: Request) {
+  const userId = await getCurrentUserId();
   const appUrl = getPublicOrigin(request);
   const { searchParams } = new URL(request.url);
   const code = searchParams.get("code");
@@ -25,7 +25,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    await exchangeWhoopCode(code, DEFAULT_USER_ID, appUrl);
+    await exchangeWhoopCode(code, userId, appUrl);
     const response = NextResponse.redirect(`${appUrl}/?whoop=connected`);
     response.cookies.delete("whoop_oauth_state");
     return response;

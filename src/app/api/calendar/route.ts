@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { DEFAULT_USER_ID, safeJsonParse } from "@/lib/daily-log";
+import { getCurrentUserId } from "@/lib/auth";
+import { safeJsonParse } from "@/lib/daily-log";
 import { addDays, formatLocalDate, MONTH_REGEX } from "@/lib/date";
 import type {
   CalendarDayMarker,
@@ -9,6 +10,7 @@ import type {
 } from "@/types/fitness";
 
 export async function GET(request: Request) {
+  const userId = await getCurrentUserId();
   const { searchParams } = new URL(request.url);
   const rawMonth = searchParams.get("month");
   const month =
@@ -27,7 +29,7 @@ export async function GET(request: Request) {
 
   const logs = await prisma.dailyLog.findMany({
     where: {
-      userId: DEFAULT_USER_ID,
+      userId,
       date: { gte: rangeStart, lte: rangeEnd },
     },
     include: {

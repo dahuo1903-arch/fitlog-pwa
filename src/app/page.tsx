@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { createSpaceToken, getCurrentUserId } from "@/lib/auth";
 import {
   DEFAULT_USER_ID,
   getDailyLogDTO,
@@ -6,10 +7,9 @@ import {
 } from "@/lib/daily-log";
 import { addDays, formatLocalDate } from "@/lib/date";
 import { getGeminiModel, isGeminiConfigured } from "@/lib/gemini-diet";
-import { isXunjiConfigured } from "@/lib/xunji";
+import { isXunjiConfiguredForUser } from "@/lib/xunji";
 import { isWhoopConfigured } from "@/lib/whoop";
 import { getLanAccessInfo } from "@/lib/network";
-import { isAccessPinEnabled } from "@/lib/auth";
 import { FitLogApp } from "@/components/FitLogApp";
 import type {
   CalendarDayMarker,
@@ -23,8 +23,9 @@ export const dynamic = "force-dynamic";
 export default async function HomePage({
   searchParams,
 }: {
-  searchParams: Promise<{ whoop?: string; reason?: string }>;
+  searchParams: Promise<{ whoop?: string; reason?: string; space?: string }>;
 }) {
+  const userId = await getCurrentUserId();
   const query = await searchParams;
   const initialNotice =
     query.whoop === "connected"
@@ -37,7 +38,12 @@ export default async function HomePage({
             text: `WHOOP 授权失败：${query.reason || "授权未完成"}`,
             isError: true,
           }
-        : null;
+        : query.space === "synced"
+          ? {
+              text: "已同步你的个人隔离空间，本设备永久免密保持绑定",
+              isError: false,
+            }
+          : null;
 
   const today = formatLocalDate();
   const month = today.slice(0, 7);
@@ -49,19 +55,20 @@ export default async function HomePage({
     7
   );
 
-  const [initialDaily, monthLogs, connections] = await Promise.all([
-    getDailyLogDTO(today, DEFAULT_USER_ID),
+  const [initialDaily, monthLogs, connections, xunjiState] = await Promise.all([
+    getDailyLogDTO(today, userId),
     prisma.dailyLog.findMany({
       where: {
-        userId: DEFAULT_USER_ID,
+        userId,
         date: { gte: rangeStart, lte: rangeEnd },
       },
       include: { meals: { select: { calories: true } } },
       orderBy: { date: "asc" },
     }),
     prisma.wearableConnection.findMany({
-      where: { userId: DEFAULT_USER_ID },
+      where: { userId },
     }),
+    isXunjiConfiguredForUser(userId),
   ]);
 
   const initialMarkers: CalendarDayMarker[] = monthLogs.map((log) => {
@@ -84,11 +91,17 @@ export default async function HomePage({
   const whoopConn = connections.find((c) => c.provider === "whoop");
   const appleConn = connections.find((c) => c.provider === "apple_watch");
   const lan = getLanAccessInfo();
+  const spaceToken = createSpaceToken(userId);
+  const spaceLabel =
+    userId === DEFAULT_USER_ID
+      ? "主空间"
+      : `独立空间 #${userId.replace(/^u_/, "").slice(0, 6)}`;
 
   const initialStatus: IntegrationStatusDTO = {
     geminiConfigured: isGeminiConfigured(),
     geminiModel: getGeminiModel(),
-    xunjiConfigured: isXunjiConfigured(),
+    xunjiConfigured: xunjiState.configured,
+    xunjiCustomKeySet: xunjiState.isCustom,
     whoopConfigured: isWhoopConfigured(),
     whoopConnected: Boolean(whoopConn?.accessToken),
     whoopLastSyncedAt: whoopConn?.lastSyncedAt?.toISOString() ?? null,
@@ -98,7 +111,8 @@ export default async function HomePage({
     appleWatchLastSyncedAt: appleConn?.lastSyncedAt?.toISOString() ?? null,
     lanUrls: lan.lanUrls,
     mdnsUrl: lan.mdnsUrl,
-    accessPinEnabled: isAccessPinEnabled(),
+    spaceLabel,
+    spaceSyncPath: `/api/space/claim?token=${encodeURIComponent(spaceToken)}`,
   };
 
   return (

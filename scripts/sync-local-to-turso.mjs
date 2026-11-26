@@ -68,6 +68,20 @@ async function applySchema() {
     { encoding: "utf8" }
   );
 
+  // 兼容升级旧版 XunjiPlanCache（若缺少 userId 列则重建为按 userId 隔绝的新表，并保留其他表数据）
+  try {
+    const colCheck = await remote.execute(`PRAGMA table_info("XunjiPlanCache")`);
+    if (
+      colCheck.rows.length > 0 &&
+      !colCheck.rows.some((r) => r.name === "userId")
+    ) {
+      console.log("   - 检测到旧版 XunjiPlanCache 缺少 userId 列，正在升级为多用户隔离表结构...");
+      await remote.execute(`DROP TABLE IF EXISTS "XunjiPlanCache"`);
+    }
+  } catch {
+    // 表不存在时忽略
+  }
+
   const statements = splitSqlStatements(ddl).map((stmt) =>
     stmt
       .replace(/^CREATE TABLE\s+/i, "CREATE TABLE IF NOT EXISTS ")

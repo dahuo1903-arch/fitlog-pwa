@@ -1,73 +1,54 @@
 import crypto from "node:crypto";
+import { cookies, headers } from "next/headers";
 import { DEFAULT_USER_ID } from "@/lib/daily-log";
 
-export const SESSION_COOKIE_NAME = "fitlog_session";
-export const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60; // 30 天
+export const SPACE_COOKIE_NAME = "fitlog_space";
+export const SPACE_HEADER_NAME = "x-fitlog-space-token";
+export const SPACE_MAX_AGE_SECONDS = 10 * 365 * 24 * 60 * 60; // 10 年长期记住本设备空间
 
-const MAX_FAILED_ATTEMPTS = 5;
-const LOCKOUT_WINDOW_MS = 60_000;
-
-interface RateLimitEntry {
-  count: number;
-  lockedUntil: number;
-}
-
-const globalForRateLimit = globalThis as unknown as {
-  fitlogPinAttempts?: Map<string, RateLimitEntry>;
-};
-
-const attemptStore =
-  globalForRateLimit.fitlogPinAttempts ?? new Map<string, RateLimitEntry>();
-globalForRateLimit.fitlogPinAttempts = attemptStore;
-
-function getConfiguredPin(): string {
-  return process.env.APP_ACCESS_PIN?.trim() || "";
-}
-
-export function isAccessPinEnabled(): boolean {
-  return getConfiguredPin().length > 0;
-}
-
-function getSessionSecret(): string {
+function getSigningSecret(): string {
   const explicit = process.env.APP_SESSION_SECRET?.trim();
   if (explicit) return explicit;
-  // 未显式设置 APP_SESSION_SECRET 时由密码派生：修改 APP_ACCESS_PIN 后旧设备会话会自动失效
+  // 未显式配置时基于已有服务端凭证派生稳定签名密钥（本地与自托管零配置即可工作）
+  const seed =
+    process.env.TURSO_AUTH_TOKEN?.trim() ||
+    process.env.WHOOP_CLIENT_SECRET?.trim() ||
+    process.env.GEMINI_API_KEY?.trim() ||
+    "fitlog-local-space-secret";
   return crypto
     .createHash("sha256")
-    .update(`fitlog-session-v1:${getConfiguredPin()}`)
+    .update(`fitlog-space-v2:${seed}`)
     .digest("hex");
 }
 
-function sha256Buffer(value: string): Buffer {
-  return crypto.createHash("sha256").update(value, "utf8").digest();
+export function isMultiSpaceMode(): boolean {
+  if (process.env.FITLOG_MULTI_SPACE === "false") return false;
+  if (process.env.FITLOG_MULTI_SPACE === "true") return true;
+  // 云端部署环境默认自动启用多用户空间隔离，防止不同访客看到同一份数据
+  return Boolean(
+    process.env.VERCEL ||
+      process.env.RAILWAY_ENVIRONMENT ||
+      process.env.FLY_APP_NAME ||
+      process.env.RENDER ||
+      process.env.TURSO_DATABASE_URL?.trim()
+  );
 }
 
-export function verifyAccessPin(input: string): boolean {
-  const configured = getConfiguredPin();
-  if (!configured) return true;
-  const a = sha256Buffer(input.trim());
-  const b = sha256Buffer(configured);
-  return crypto.timingSafeEqual(a, b);
+export function generateIsolatedUserId(): string {
+  return `u_${crypto.randomBytes(12).toString("hex")}`;
 }
 
-export function createSessionToken(userId = DEFAULT_USER_ID): string {
-  const nowSec = Math.floor(Date.now() / 1000);
-  const payload = {
-    sub: userId,
-    iat: nowSec,
-    exp: nowSec + SESSION_MAX_AGE_SECONDS,
-  };
+export function createSpaceToken(userId: string): string {
+  const payload = { uid: userId };
   const body = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
   const sig = crypto
-    .createHmac("sha256", getSessionSecret())
+    .createHmac("sha256", getSigningSecret())
     .update(body)
     .digest("base64url");
   return `${body}.${sig}`;
 }
 
-export function verifySessionToken(
-  token: string | undefined | null
-): { sub: string; exp: number } | null {
+export function verifySpaceToken(token: string | undefined | null): string | null {
   if (!token) return null;
   const dotIdx = token.indexOf(".");
   if (dotIdx <= 0 || dotIdx >= token.length - 1) return null;
@@ -76,7 +57,7 @@ export function verifySessionToken(
   const sig = token.slice(dotIdx + 1);
 
   const expectedSig = crypto
-    .createHmac("sha256", getSessionSecret())
+    .createHmac("sha256", getSigningSecret())
     .update(body)
     .digest("base64url");
 
@@ -92,18 +73,36 @@ export function verifySessionToken(
   try {
     const parsed = JSON.parse(
       Buffer.from(body, "base64url").toString("utf8")
-    ) as { sub?: unknown; exp?: unknown };
+    ) as { uid?: unknown };
     if (
-      typeof parsed.sub !== "string" ||
-      typeof parsed.exp !== "number" ||
-      parsed.exp <= Math.floor(Date.now() / 1000)
+      typeof parsed.uid !== "string" ||
+      parsed.uid.length < 1 ||
+      parsed.uid.length > 64 ||
+      !/^[a-zA-Z0-9_-]+$/.test(parsed.uid)
     ) {
       return null;
     }
-    return { sub: parsed.sub, exp: parsed.exp };
+    return parsed.uid;
   } catch {
     return null;
   }
+}
+
+/**
+ * 读取当前请求对应的隔离用户空间 ID。
+ * 优先校验签名 Cookie，其次校验由 proxy.ts 在首次访问当次注入的签名请求头，绝不信任未签名值。
+ */
+export async function getCurrentUserId(): Promise<string> {
+  const cookieStore = await cookies();
+  const fromCookie = verifySpaceToken(cookieStore.get(SPACE_COOKIE_NAME)?.value);
+  if (fromCookie) return fromCookie;
+
+  const headerStore = await headers();
+  const fromHeader = verifySpaceToken(headerStore.get(SPACE_HEADER_NAME));
+  if (fromHeader) return fromHeader;
+
+  // 本地单人运行模式默认使用 "local"
+  return DEFAULT_USER_ID;
 }
 
 export function isSecureRequest(request: Request): boolean {
@@ -139,37 +138,4 @@ export function getPublicOrigin(request: Request): string {
     return `${forwardedProto || "https"}://${forwardedHost}`;
   }
   return new URL(request.url).origin;
-}
-
-export function checkPinRateLimit(clientKey: string): {
-  allowed: boolean;
-  retryAfterSeconds: number;
-} {
-  const now = Date.now();
-  const entry = attemptStore.get(clientKey);
-  if (!entry) return { allowed: true, retryAfterSeconds: 0 };
-  if (entry.lockedUntil > now) {
-    return {
-      allowed: false,
-      retryAfterSeconds: Math.ceil((entry.lockedUntil - now) / 1000),
-    };
-  }
-  if (entry.lockedUntil > 0 && entry.lockedUntil <= now) {
-    attemptStore.delete(clientKey);
-  }
-  return { allowed: true, retryAfterSeconds: 0 };
-}
-
-export function recordPinFailure(clientKey: string): void {
-  const now = Date.now();
-  const prev = attemptStore.get(clientKey);
-  const nextCount = (prev?.count ?? 0) + 1;
-  attemptStore.set(clientKey, {
-    count: nextCount,
-    lockedUntil: nextCount >= MAX_FAILED_ATTEMPTS ? now + LOCKOUT_WINDOW_MS : 0,
-  });
-}
-
-export function clearPinFailures(clientKey: string): void {
-  attemptStore.delete(clientKey);
 }

@@ -8,9 +8,10 @@ import {
   CircleDashed,
   Copy,
   Download,
+  KeyRound,
   Loader2,
-  LogOut,
   RefreshCw,
+  ShieldCheck,
   Smartphone,
   Watch,
   X,
@@ -23,6 +24,8 @@ interface ConnectionsDrawerProps {
   status: IntegrationStatusDTO;
   onSyncWhoop: (syncBodyWeight: boolean) => Promise<void>;
   onDisconnectWhoop: () => Promise<void>;
+  onRefreshStatus: () => Promise<void>;
+  onNotice: (text: string, isError?: boolean) => void;
   syncingWhoop: boolean;
 }
 
@@ -32,15 +35,26 @@ export function ConnectionsDrawer({
   status,
   onSyncWhoop,
   onDisconnectWhoop,
+  onRefreshStatus,
+  onNotice,
   syncingWhoop,
 }: ConnectionsDrawerProps) {
   const [syncWeight, setSyncWeight] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
-  const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [isStandalone, setIsStandalone] = useState(false);
   const [isIos, setIsIos] = useState(false);
   const [canInstallPrompt, setCanInstallPrompt] = useState(false);
-  const [locking, setLocking] = useState(false);
+
+  // 个人训记 Key 配置
+  const [editingXunji, setEditingXunji] = useState(false);
+  const [xunjiInput, setXunjiInput] = useState("");
+  const [savingXunji, setSavingXunji] = useState(false);
+
+  // 跨设备空间导入 / 新建
+  const [showSpaceSwitch, setShowSpaceSwitch] = useState(false);
+  const [syncLinkInput, setSyncLinkInput] = useState("");
+  const [switchingSpace, setSwitchingSpace] = useState(false);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -72,27 +86,75 @@ export function ConnectionsDrawer({
     setCanInstallPrompt(false);
   };
 
-  const handleLockDevice = async () => {
-    setLocking(true);
+  const handleCopyText = async (key: string, text: string) => {
     try {
-      await fetch("/api/auth/logout", { method: "POST" });
-      window.location.replace("/unlock");
-    } finally {
-      setLocking(false);
+      await navigator.clipboard.writeText(text);
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey((cur) => (cur === key ? null : cur)), 2000);
+    } catch {
+      onNotice("复制失败，请手动长按复制", true);
     }
   };
 
-  const handleCopyUrl = async (url: string) => {
+  const handleSaveXunjiKey = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingXunji(true);
     try {
-      await navigator.clipboard.writeText(url);
-      setCopiedUrl(url);
-      setTimeout(() => setCopiedUrl((cur) => (cur === url ? null : cur)), 2000);
-    } catch {
-      // ignore
+      const res = await fetch("/api/integrations/xunji", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: xunjiInput }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "保存训记 Key 失败");
+      await onRefreshStatus();
+      setXunjiInput("");
+      setEditingXunji(false);
+      onNotice(data.message || "已保存个人训记 Key");
+    } catch (err) {
+      onNotice(err instanceof Error ? err.message : "保存失败", true);
+    } finally {
+      setSavingXunji(false);
+    }
+  };
+
+  const handleClaimSpace = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!syncLinkInput.trim()) return;
+    setSwitchingSpace(true);
+    try {
+      const res = await fetch("/api/space/claim", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tokenOrUrl: syncLinkInput.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "切换空间失败");
+      window.location.replace("/?space=synced");
+    } catch (err) {
+      onNotice(err instanceof Error ? err.message : "切换失败", true);
+      setSwitchingSpace(false);
+    }
+  };
+
+  const handleCreateFreshSpace = async () => {
+    setSwitchingSpace(true);
+    try {
+      const res = await fetch("/api/space/reset", { method: "POST" });
+      if (!res.ok) throw new Error("创建新空间失败");
+      window.location.replace("/");
+    } catch (err) {
+      onNotice(err instanceof Error ? err.message : "操作失败", true);
+      setSwitchingSpace(false);
     }
   };
 
   if (!open) return null;
+
+  const fullSyncUrl =
+    typeof window !== "undefined"
+      ? `${window.location.origin}${status.spaceSyncPath}`
+      : status.spaceSyncPath;
 
   return (
     <div
@@ -100,12 +162,12 @@ export function ConnectionsDrawer({
       onClick={onClose}
     >
       <div
-        className="w-full max-w-md rounded-t-3xl border border-zinc-800 bg-zinc-950 p-5 sm:rounded-3xl"
+        className="max-h-[86vh] w-full max-w-md overflow-y-auto rounded-t-3xl border border-zinc-800 bg-zinc-950 p-5 sm:rounded-3xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">
           <h3 className="text-base font-semibold text-zinc-100">
-            数据源与设备连接
+            数据源与个人空间
           </h3>
           <button
             type="button"
@@ -139,7 +201,7 @@ export function ConnectionsDrawer({
             </div>
 
             <p className="mt-1.5 text-xs text-zinc-400">
-              自动读取睡眠时长、入睡/起床时间、每日消耗 (kcal) 与恢复度。
+              绑定你自己的 WHOOP 账号，自动同步睡眠、每日消耗与恢复度（按个人空间独立隔绝）。
             </p>
 
             {status.whoopConnected ? (
@@ -194,19 +256,14 @@ export function ConnectionsDrawer({
               </a>
             ) : (
               <div className="mt-2.5 rounded-xl bg-zinc-950 p-2.5 text-[11px] text-zinc-400">
-                在 <code className="text-zinc-200">.env</code> 填写{" "}
+                自部署时在环境变量填写{" "}
                 <code className="text-zinc-200">WHOOP_CLIENT_ID</code> 和{" "}
-                <code className="text-zinc-200">WHOOP_CLIENT_SECRET</code>，并在
-                WHOOP Developer 后台将 Redirect URI 设为{" "}
-                <code className="text-zinc-200">
-                  /api/whoop/callback
-                </code>
-                。
+                <code className="text-zinc-200">WHOOP_CLIENT_SECRET</code> 即可开启授权。
               </div>
             )}
           </div>
 
-          {/* 2. Gemini & 训记状态 */}
+          {/* 2. Gemini & 个人训记 API */}
           <div className="grid grid-cols-2 gap-2.5">
             <div className="rounded-2xl border border-zinc-800 bg-zinc-900/60 p-3">
               <div className="flex items-center justify-between text-xs">
@@ -229,17 +286,128 @@ export function ConnectionsDrawer({
                 <span className="font-medium text-zinc-200">训记 API</span>
                 <span
                   className={
-                    status.xunjiConfigured ? "text-emerald-400" : "text-amber-400"
+                    status.xunjiConfigured ? "text-emerald-400" : "text-zinc-400"
                   }
                 >
-                  {status.xunjiConfigured ? "已就绪" : "未填 Key"}
+                  {status.xunjiConfigured ? "已就绪" : "未绑定"}
                 </span>
               </div>
-              <p className="mt-1 text-[11px] text-zinc-500">30s 防限频缓存</p>
+              <button
+                type="button"
+                onClick={() => setEditingXunji((v) => !v)}
+                className="mt-1 flex items-center gap-1 text-[11px] text-sky-400 hover:text-sky-300"
+              >
+                <KeyRound className="h-3 w-3" />
+                <span>
+                  {status.xunjiCustomKeySet ? "修改个人 Key" : "填我的训记 Key"}
+                </span>
+              </button>
             </div>
           </div>
 
-          {/* 3. 安装为独立 App & 局域网地址 */}
+          {editingXunji && (
+            <form
+              onSubmit={handleSaveXunjiKey}
+              className="space-y-2 rounded-2xl border border-zinc-800 bg-zinc-900/70 p-3"
+            >
+              <p className="text-[11px] text-zinc-400">
+                填写你自己的训记 Open API Key（仅保存在你当前的隔离空间，他人完全不可见；留空保存可清除）。
+              </p>
+              <div className="flex gap-2">
+                <input
+                  type="password"
+                  value={xunjiInput}
+                  onChange={(e) => setXunjiInput(e.target.value)}
+                  placeholder="xjllm_..."
+                  className="h-9 min-w-0 flex-1 rounded-xl border border-zinc-700 bg-zinc-950 px-3 text-xs text-zinc-100 placeholder:text-zinc-500 focus:border-sky-500 focus:outline-none"
+                />
+                <button
+                  type="submit"
+                  disabled={savingXunji}
+                  className="h-9 shrink-0 rounded-xl bg-sky-500 px-3 text-xs font-medium text-zinc-950 disabled:opacity-50"
+                >
+                  {savingXunji ? "保存中" : "保存"}
+                </button>
+              </div>
+            </form>
+          )}
+
+          {/* 3. 无密码个人隔离空间 & 跨设备同步 */}
+          <div className="rounded-2xl border border-zinc-800/80 bg-zinc-900/50 p-3.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="h-4 w-4 text-emerald-400" />
+                <span className="font-medium text-zinc-200">
+                  独立个人空间（免密码）
+                </span>
+              </div>
+              <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-300">
+                {status.spaceLabel}
+              </span>
+            </div>
+
+            <p className="mt-1.5 text-xs text-zinc-400">
+              无需登录密码，每位用户的数据、WHOOP 与训记均自动完全隔绝。换新手机时，复制下方专属链接打开一次即可同步自己的数据（请勿分享给他人）。
+            </p>
+
+            <div className="mt-2.5 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => handleCopyText("space-sync", fullSyncUrl)}
+                className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-xl bg-zinc-800 text-xs font-medium text-zinc-100 hover:bg-zinc-700"
+              >
+                {copiedKey === "space-sync" ? (
+                  <>
+                    <Check className="h-3.5 w-3.5 text-emerald-400" />
+                    <span className="text-emerald-400">已复制同步链接</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="h-3.5 w-3.5" />
+                    <span>复制跨设备同步链接</span>
+                  </>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowSpaceSwitch((v) => !v)}
+                className="h-9 rounded-xl border border-zinc-700 px-3 text-xs text-zinc-300 hover:border-zinc-500"
+              >
+                切换/新建
+              </button>
+            </div>
+
+            {showSpaceSwitch && (
+              <div className="mt-2.5 space-y-2 border-t border-zinc-800 pt-2.5">
+                <form onSubmit={handleClaimSpace} className="flex gap-2">
+                  <input
+                    type="text"
+                    value={syncLinkInput}
+                    onChange={(e) => setSyncLinkInput(e.target.value)}
+                    placeholder="粘贴你的跨设备同步链接..."
+                    className="h-9 min-w-0 flex-1 rounded-xl border border-zinc-700 bg-zinc-950 px-2.5 text-xs text-zinc-100 placeholder:text-zinc-500 focus:border-emerald-500 focus:outline-none"
+                  />
+                  <button
+                    type="submit"
+                    disabled={switchingSpace || !syncLinkInput.trim()}
+                    className="h-9 shrink-0 rounded-xl bg-emerald-500 px-3 text-xs font-medium text-zinc-950 disabled:opacity-40"
+                  >
+                    同步
+                  </button>
+                </form>
+                <button
+                  type="button"
+                  disabled={switchingSpace}
+                  onClick={handleCreateFreshSpace}
+                  className="text-[11px] text-zinc-400 underline underline-offset-2 hover:text-zinc-200"
+                >
+                  新建一个全新的空白隔离空间
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* 4. 安装为独立 App & 局域网地址 */}
           <div className="rounded-2xl border border-zinc-800/80 bg-zinc-900/50 p-3.5">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -312,10 +480,10 @@ export function ConnectionsDrawer({
                       </code>
                       <button
                         type="button"
-                        onClick={() => handleCopyUrl(url)}
+                        onClick={() => handleCopyText(url, url)}
                         className="flex shrink-0 items-center gap-1 rounded-lg bg-zinc-800 px-2 py-1 text-[11px] text-zinc-300 hover:bg-zinc-700"
                       >
-                        {copiedUrl === url ? (
+                        {copiedKey === url ? (
                           <>
                             <Check className="h-3 w-3 text-emerald-400" />
                             <span className="text-emerald-400">已复制</span>
@@ -334,7 +502,7 @@ export function ConnectionsDrawer({
             )}
           </div>
 
-          {/* 4. Apple Watch 后续预留插槽 */}
+          {/* 5. Apple Watch 后续预留插槽 */}
           <div className="rounded-2xl border border-zinc-800/80 bg-zinc-900/40 p-3.5">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -350,27 +518,10 @@ export function ConnectionsDrawer({
             <p className="mt-1.5 text-xs text-zinc-400">
               已就绪标准化写入接口{" "}
               <code className="text-zinc-200">POST /api/wearables/apple-watch</code>
-              ，后续面向其他用户时可直接对接 iPhone 快捷指令自动化或原生 HealthKit
+              ，后续可直接对接 iPhone 快捷指令自动化或原生 HealthKit
               App，字段（睡眠、体重、静息/活动消耗、userId）与 WHOOP 统一。
             </p>
           </div>
-
-          {/* 5. 隐私访问锁控制 */}
-          {status.accessPinEnabled && (
-            <button
-              type="button"
-              disabled={locking}
-              onClick={handleLockDevice}
-              className="flex h-10 w-full items-center justify-center gap-1.5 rounded-xl border border-zinc-800 bg-zinc-900/70 text-xs text-zinc-300 transition hover:border-rose-500/40 hover:text-rose-300 disabled:opacity-50"
-            >
-              {locking ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <LogOut className="h-3.5 w-3.5" />
-              )}
-              <span>锁定当前设备（退出 30 天免密）</span>
-            </button>
-          )}
         </div>
       </div>
     </div>

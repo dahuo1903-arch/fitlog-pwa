@@ -1,11 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import {
-  DEFAULT_USER_ID,
-  ensureDailyLog,
-  getDailyLogDTO,
-} from "@/lib/daily-log";
+import { getCurrentUserId } from "@/lib/auth";
+import { ensureDailyLog, getDailyLogDTO } from "@/lib/daily-log";
 import { formatLocalDate, isValidDateStr } from "@/lib/date";
 
 const planItemSchema = z.object({
@@ -30,16 +27,18 @@ const patchDailySchema = z.object({
 });
 
 export async function GET(request: Request) {
+  const userId = await getCurrentUserId();
   const { searchParams } = new URL(request.url);
   const rawDate = searchParams.get("date");
   const date = isValidDateStr(rawDate) ? rawDate : formatLocalDate();
 
-  const daily = await getDailyLogDTO(date, DEFAULT_USER_ID);
+  const daily = await getDailyLogDTO(date, userId);
   return NextResponse.json({ daily });
 }
 
 export async function PATCH(request: Request) {
   try {
+    const userId = await getCurrentUserId();
     const body = await request.json();
     const parsed = patchDailySchema.safeParse(body);
     if (!parsed.success || !isValidDateStr(parsed.data.date)) {
@@ -50,7 +49,7 @@ export async function PATCH(request: Request) {
     }
 
     const input = parsed.data;
-    await ensureDailyLog(input.date, DEFAULT_USER_ID);
+    await ensureDailyLog(input.date, userId);
 
     const updateData: Record<string, unknown> = {};
 
@@ -110,11 +109,11 @@ export async function PATCH(request: Request) {
     }
 
     await prisma.dailyLog.update({
-      where: { userId_date: { userId: DEFAULT_USER_ID, date: input.date } },
+      where: { userId_date: { userId, date: input.date } },
       data: updateData,
     });
 
-    const daily = await getDailyLogDTO(input.date, DEFAULT_USER_ID);
+    const daily = await getDailyLogDTO(input.date, userId);
     return NextResponse.json({ daily });
   } catch (error) {
     const message = error instanceof Error ? error.message : "保存当日记录失败";

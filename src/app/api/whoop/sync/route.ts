@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { DEFAULT_USER_ID, getDailyLogDTO } from "@/lib/daily-log";
+import { getCurrentUserId } from "@/lib/auth";
+import { getDailyLogDTO } from "@/lib/daily-log";
 import { formatLocalDate, isValidDateStr } from "@/lib/date";
 import { syncWhoopRange } from "@/lib/whoop";
 
@@ -13,6 +14,7 @@ const syncWhoopSchema = z.object({
 
 export async function POST(request: Request) {
   try {
+    const userId = await getCurrentUserId();
     const body = await request.json().catch(() => ({}));
     const parsed = syncWhoopSchema.safeParse(body);
     if (!parsed.success) {
@@ -28,10 +30,10 @@ export async function POST(request: Request) {
       daysBack: parsed.data.daysBack,
       timezoneOffsetMinutes: parsed.data.timezoneOffsetMinutes,
       syncBodyWeight: parsed.data.syncBodyWeight,
-      userId: DEFAULT_USER_ID,
+      userId,
     });
 
-    const daily = await getDailyLogDTO(anchorDate, DEFAULT_USER_ID);
+    const daily = await getDailyLogDTO(anchorDate, userId);
     const hasAny = summary.sleepCount > 0 || summary.cycleCount > 0;
     return NextResponse.json({
       daily,

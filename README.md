@@ -19,11 +19,11 @@
    - 支持手写当日训练主题与可勾选动作清单；
    - 对接训记 Open API v2 / Plan v1，内置 30 秒本地防限频缓存，且不将力量训练容量重复折算成热量（避免与穿戴设备双重计数）。
 
-### 面向自托管与长期迭代的设计
+### 面向自托管与多用户隔离的设计
+- **无需登录密码 · 自动数据隔绝**：直接打开即可记录，无需注册或输入密码。云端部署时系统为每位访问者自动分配独立的加密签名空间，每个人的饮食、体重、睡眠、WHOOP 授权、个人训记 API Key 与训练计划均按 `userId` 100% 物理行级隔绝；换设备时可在「连接」中一键复制专属跨设备同步链接即可无缝同步个人数据。
 - **完整可安装 PWA**：含 iOS 180px 专用图标、Android 自适应 Maskable 图标、Network-First 热更新 Service Worker 与离线兜底页。
-- **30 天个人访问密码锁**：配置 `APP_ACCESS_PIN` 即全局启用 Next.js 16 `proxy.ts` 鉴权与 `/unlock` 解锁页（HttpOnly HMAC Cookie 记住本设备 30 天 + 防爆破限流），本地未配置时自动免锁。
 - **双模数据库（本地 SQLite / 云端 Turso libSQL）**：同一份 `prisma/schema.prisma`，本地零配置读写 `prisma/dev.db`，配置 `TURSO_DATABASE_URL` 自动切换 `@prisma/adapter-libsql` 适配 Vercel Serverless，并提供一键建表与历史数据迁移脚本 `npm run db:sync-turso`。
-- **多用户 & Apple Watch 预留**：数据表内置 `userId` 与来源字段，已就绪标准化 `POST /api/wearables/apple-watch` 接口（可选 Bearer 密钥保护），方便对接 iPhone 快捷指令或原生 HealthKit 应用。
+- **Apple Watch 标准化接口**：已就绪 `POST /api/wearables/apple-watch` 接口（可选 Bearer 密钥保护），方便对接 iPhone 快捷指令或原生 HealthKit 应用。
 
 ---
 
@@ -72,17 +72,16 @@ npm run dev
 | `DATABASE_URL` | 是 | 固定填 `file:./dev.db`（用于构建期 `prisma generate`） |
 | `TURSO_DATABASE_URL` | 云端必填 | Turso 数据库 `libsql://...` 地址 |
 | `TURSO_AUTH_TOKEN` | 云端必填 | Turso 读写 Token |
-| `APP_ACCESS_PIN` | 强烈推荐 | 个人访问密码锁（留空则免锁；解锁后本设备 30 天免密） |
-| `APP_SESSION_SECRET` | 可选 | 会话签名密钥（留空时由 `APP_ACCESS_PIN` 自动派生） |
+| `APP_SESSION_SECRET` | 云端推荐 | 任意随机字符串，用于签名每人独立隔离空间 Cookie 与跨设备同步链接 |
 | `GEMINI_API_KEY` | 可选 | Gemini 饮食解析与语音转写密钥（[Google AI Studio](https://aistudio.google.com/apikey)） |
 | `GEMINI_MODEL` | 可选 | 默认 `gemini-4-hydrogen` |
-| `XUNJI_API_KEY` | 可选 | 训记 Open API 密钥（`xjllm_...`） |
+| `XUNJI_API_KEY` | 可选 | 仅主空间默认使用的训记 Key；其他访客可在页面「连接」中填写各自的训记 Key，互不干扰 |
 | `WHOOP_CLIENT_ID` | 可选 | WHOOP Developer 应用 Client ID |
 | `WHOOP_CLIENT_SECRET` | 可选 | WHOOP Developer 应用 Client Secret |
 | `WHOOP_REDIRECT_URI` | 可选 | 留空将自动按当前访问域名生成 `/api/whoop/callback` |
 | `APPLE_WATCH_WEBHOOK_SECRET` | 可选 | 保护 `POST /api/wearables/apple-watch` 的 Bearer 密钥 |
 
-4. **安装到手机主屏幕**：部署完成后，用 iPhone Safari 打开你的 HTTPS 域名 → 输入密码解锁 → 点击底部「分享 → 添加到主屏幕」即可作为独立全屏 App 使用。后续每次推送代码至 `main`，Vercel 自动构建上线，手机重新打开即享最新版本。
+4. **安装到手机主屏幕**：部署完成后，用 iPhone Safari 打开你的 HTTPS 域名 → 直接进入自己的独立空间 → 点击底部「分享 → 添加到主屏幕」即可作为独立全屏 App 使用。后续每次推送代码至 `main`，Vercel 自动构建上线，手机重新打开即享最新版本。
 
 ---
 

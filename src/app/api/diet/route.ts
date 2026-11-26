@@ -1,11 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import {
-  DEFAULT_USER_ID,
-  ensureDailyLog,
-  getDailyLogDTO,
-} from "@/lib/daily-log";
+import { getCurrentUserId } from "@/lib/auth";
+import { ensureDailyLog, getDailyLogDTO } from "@/lib/daily-log";
 import { isValidDateStr } from "@/lib/date";
 import { parseDietWithGemini } from "@/lib/gemini-diet";
 
@@ -37,6 +34,7 @@ const manualDietSchema = z.object({
 
 export async function POST(request: Request) {
   try {
+    const userId = await getCurrentUserId();
     const body = await request.json();
 
     if (body?.mode === "manual") {
@@ -49,7 +47,7 @@ export async function POST(request: Request) {
       }
 
       const data = parsed.data;
-      const log = await ensureDailyLog(data.date, DEFAULT_USER_ID);
+      const log = await ensureDailyLog(data.date, userId);
       const created = await prisma.mealItem.create({
         data: {
           dailyLogId: log.id,
@@ -65,7 +63,7 @@ export async function POST(request: Request) {
         },
       });
 
-      const daily = await getDailyLogDTO(data.date, DEFAULT_USER_ID);
+      const daily = await getDailyLogDTO(data.date, userId);
       return NextResponse.json({ daily, added: [created] }, { status: 201 });
     }
 
@@ -92,7 +90,7 @@ export async function POST(request: Request) {
       preferredMealType: data.mealType,
     });
 
-    const log = await ensureDailyLog(data.date, DEFAULT_USER_ID);
+    const log = await ensureDailyLog(data.date, userId);
     const rawInput =
       data.text?.trim() || (data.imageBase64 ? "[食物照片]" : "饮食记录");
 
@@ -116,7 +114,7 @@ export async function POST(request: Request) {
       )
     );
 
-    const daily = await getDailyLogDTO(data.date, DEFAULT_USER_ID);
+    const daily = await getDailyLogDTO(data.date, userId);
     return NextResponse.json({ daily, added: created }, { status: 201 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "饮食记录保存失败";

@@ -91,14 +91,18 @@ model WearableConnection {
   @@unique([userId, provider])
 }
 
-// 训记训练计划本地缓存（防限频）
+// 训记训练计划本地缓存（按 userId 隔绝，防限频）
 model XunjiPlanCache {
   id        String   @id @default(cuid())
-  planRef   String   @unique
+  userId    String   @default("local")
+  planRef   String
   title     String
   status    String
   startDate String?
   endDate   String?
   rawJson   String
   syncedAt  DateTime @default(now())
+
+  @@unique([userId, planRef])
+  @@index([userId])
 }

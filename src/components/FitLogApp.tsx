@@ -76,9 +76,12 @@ export function FitLogApp({
     }
   }, []);
 
-  // 清理地址栏里的 OAuth 回调 query 参数
+  // 清理地址栏里的 OAuth / 空间同步回调 query 参数
   useEffect(() => {
-    if (window.location.search.includes("whoop=")) {
+    if (
+      window.location.search.includes("whoop=") ||
+      window.location.search.includes("space=")
+    ) {
       window.history.replaceState({}, "", "/");
     }
   }, []);
@@ -268,6 +271,8 @@ export function FitLogApp({
         status={status}
         onSyncWhoop={handleSyncWhoop}
         onDisconnectWhoop={handleDisconnectWhoop}
+        onRefreshStatus={refreshStatus}
+        onNotice={showNotice}
         syncingWhoop={syncingWhoop}
       />
     </main>

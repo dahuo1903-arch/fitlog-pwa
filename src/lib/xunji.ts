@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { safeJsonParse } from "@/lib/daily-log";
+import { DEFAULT_USER_ID, safeJsonParse } from "@/lib/daily-log";
 import type {
   PlanExerciseItem,
   XunjiMovementSummary,
@@ -71,13 +71,44 @@ interface XunjiPlanDetailRes {
   days?: XunjiPlanDay[];
 }
 
-function getXunjiApiKey(): string | null {
+function getEnvXunjiApiKey(): string | null {
   const key = process.env.XUNJI_API_KEY?.trim();
   return key ? key : null;
 }
 
 export function isXunjiConfigured(): boolean {
-  return Boolean(getXunjiApiKey());
+  return Boolean(getEnvXunjiApiKey());
+}
+
+/**
+ * 按用户空间解析训记 API Key：
+ * - 优先读取该用户在「连接」中填写的个人训记 Key
+ * - 仅主空间 ("local") 允许回退到服务器 .env 中的 XUNJI_API_KEY，严防其他访客读取到部署者个人数据
+ */
+export async function getXunjiApiKeyForUser(
+  userId = DEFAULT_USER_ID
+): Promise<{ apiKey: string | null; isCustom: boolean }> {
+  const conn = await prisma.wearableConnection.findUnique({
+    where: { userId_provider: { userId, provider: "xunji" } },
+    select: { accessToken: true },
+  });
+  const customKey = conn?.accessToken?.trim();
+  if (customKey) {
+    return { apiKey: customKey, isCustom: true };
+  }
+
+  if (userId === DEFAULT_USER_ID) {
+    return { apiKey: getEnvXunjiApiKey(), isCustom: false };
+  }
+
+  return { apiKey: null, isCustom: false };
+}
+
+export async function isXunjiConfiguredForUser(
+  userId = DEFAULT_USER_ID
+): Promise<{ configured: boolean; isCustom: boolean }> {
+  const { apiKey, isCustom } = await getXunjiApiKeyForUser(userId);
+  return { configured: Boolean(apiKey), isCustom };
 }
 
 async function postXunji<T>(
@@ -185,10 +216,15 @@ export function parseXunjiWorkouts(rawTrains: XunjiRawTrain[]): {
   };
 }
 
-export async function fetchXunjiDayWorkouts(dateStr: string) {
-  const apiKey = getXunjiApiKey();
+export async function fetchXunjiDayWorkouts(
+  dateStr: string,
+  userId = DEFAULT_USER_ID
+) {
+  const { apiKey } = await getXunjiApiKeyForUser(userId);
   if (!apiKey) {
-    throw new Error("未配置 XUNJI_API_KEY，请先在 .env 中填入你的训记 Open API Key");
+    throw new Error(
+      "尚未配置你的训记 Open API Key，请点右上角「连接」填写个人训记 Key"
+    );
   }
 
   const data = await postXunji<{ res?: { trains?: XunjiRawTrain[] } }>(
@@ -224,10 +260,12 @@ function formatTargetSummary(sets: XunjiPlanTargetSet[] | undefined): string {
   return parts.join(" · ");
 }
 
-export async function syncXunjiPlansToCache(): Promise<number> {
-  const apiKey = getXunjiApiKey();
+export async function syncXunjiPlansToCache(
+  userId = DEFAULT_USER_ID
+): Promise<number> {
+  const { apiKey } = await getXunjiApiKeyForUser(userId);
   if (!apiKey) {
-    throw new Error("未配置 XUNJI_API_KEY");
+    throw new Error("尚未配置个人训记 Open API Key");
   }
 
   const listResp = await postXunji<{ res?: { plans?: XunjiPlanMeta[] } }>(
@@ -268,7 +306,7 @@ export async function syncXunjiPlansToCache(): Promise<number> {
 
     if (detail?.res) {
       await prisma.xunjiPlanCache.upsert({
-        where: { planRef: plan.plan_ref },
+        where: { userId_planRef: { userId, planRef: plan.plan_ref } },
         update: {
           title: plan.title,
           status: plan.status,
@@ -278,6 +316,7 @@ export async function syncXunjiPlansToCache(): Promise<number> {
           syncedAt: new Date(),
         },
         create: {
+          userId,
           planRef: plan.plan_ref,
           title: plan.title,
           status: plan.status,
@@ -294,11 +333,15 @@ export async function syncXunjiPlansToCache(): Promise<number> {
   return synced;
 }
 
-export async function lookupXunjiPlanForDate(dateStr: string): Promise<{
+export async function lookupXunjiPlanForDate(
+  dateStr: string,
+  userId = DEFAULT_USER_ID
+): Promise<{
   planTitle: string;
   planItems: PlanExerciseItem[];
 } | null> {
   const cachedPlans = await prisma.xunjiPlanCache.findMany({
+    where: { userId },
     orderBy: { syncedAt: "desc" },
   });
 
