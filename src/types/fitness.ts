@@ -5,6 +5,15 @@ export interface PlanExerciseItem {
   done: boolean;
 }
 
+export interface XunjiSetDetail {
+  weight: number;
+  reps: number;
+  unit: string;
+  selfWeight?: boolean;
+  durationLabel?: string;
+  done: boolean;
+}
+
 export interface XunjiMovementSummary {
   name: string;
   sets: number;
@@ -12,6 +21,8 @@ export interface XunjiMovementSummary {
   maxWeight: number;
   volume: number;
   unit: string;
+  setGroups?: string[];
+  setDetails?: XunjiSetDetail[];
 }
 
 export interface XunjiWorkoutSummary {

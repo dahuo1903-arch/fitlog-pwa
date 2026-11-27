@@ -290,17 +290,33 @@ export function WorkoutPlanCard({
                     </span>
                   )}
                 </div>
-                <div className="flex flex-wrap gap-1.5">
+                <div className="space-y-1.5">
                   {workout.movements.map((move, idx) => (
-                    <span
+                    <div
                       key={`${workout.localId}-${idx}`}
-                      className="tabular-nums rounded-lg bg-zinc-900 px-2 py-1 text-[11px] text-zinc-300 ring-1 ring-zinc-800"
+                      className="rounded-lg bg-zinc-900/90 px-2.5 py-2 ring-1 ring-zinc-800/90"
                     >
-                      {move.name} · {move.doneSets}组
-                      {move.maxWeight > 0
-                        ? ` · 最高${move.maxWeight}${move.unit}`
-                        : ""}
-                    </span>
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <span className="font-medium text-zinc-200">
+                          {move.name}
+                        </span>
+                        <span className="tabular-nums text-[11px] text-zinc-500">
+                          共 {move.doneSets} 组
+                        </span>
+                      </div>
+                      {move.setGroups && move.setGroups.length > 0 && (
+                        <div className="mt-1.5 flex flex-wrap gap-1.5">
+                          {move.setGroups.map((groupText, gIdx) => (
+                            <span
+                              key={`${workout.localId}-${idx}-g-${gIdx}`}
+                              className="tabular-nums rounded-md bg-zinc-950 px-2 py-0.5 text-[11px] text-zinc-300 ring-1 ring-zinc-800"
+                            >
+                              {groupText}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   ))}
                 </div>
               </div>

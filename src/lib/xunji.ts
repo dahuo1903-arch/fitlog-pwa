@@ -3,6 +3,7 @@ import { DEFAULT_USER_ID, safeJsonParse } from "@/lib/daily-log";
 import type {
   PlanExerciseItem,
   XunjiMovementSummary,
+  XunjiSetDetail,
   XunjiWorkoutSummary,
 } from "@/types/fitness";
 
@@ -17,6 +18,8 @@ interface XunjiRawSet {
   weight?: string | number | null;
   unit?: string | null;
   reps?: string | number | null;
+  time?: number | null;
+  timeLabel?: string | null;
   selfWeight?: boolean;
 }
 
@@ -149,6 +152,56 @@ async function postXunji<T>(
   return parsed as T;
 }
 
+function formatCleanNumber(n: number): string {
+  return Number.isInteger(n) ? String(n) : String(Number(n.toFixed(1)));
+}
+
+/**
+ * 将连续相同（重量/自重 + 次数/时长）的组聚合为「几组×几次 重量」格式，贴近训记 App 展示
+ */
+function buildSetGroups(details: XunjiSetDetail[]): string[] {
+  const active = details.filter((d) => d.done);
+  const list = active.length > 0 ? active : details;
+  if (list.length === 0) return [];
+
+  const runs: { item: XunjiSetDetail; count: number; key: string }[] = [];
+  for (const item of list) {
+    const weightKey = item.selfWeight
+      ? "self"
+      : `${formatCleanNumber(item.weight)}_${item.unit}`;
+    const effortKey =
+      item.reps > 0
+        ? `r${item.reps}`
+        : item.durationLabel
+          ? `t${item.durationLabel}`
+          : "none";
+    const key = `${weightKey}|${effortKey}`;
+    const prev = runs[runs.length - 1];
+    if (prev && prev.key === key) {
+      prev.count += 1;
+    } else {
+      runs.push({ item, count: 1, key });
+    }
+  }
+
+  return runs.map(({ item, count }) => {
+    const effort =
+      item.reps > 0
+        ? `${item.reps}次`
+        : item.durationLabel
+          ? item.durationLabel
+          : "";
+    const load = item.selfWeight
+      ? "自重"
+      : item.weight > 0
+        ? `${formatCleanNumber(item.weight)}${item.unit}`
+        : "";
+
+    const setPart = effort ? `${count}组×${effort}` : `${count}组`;
+    return load ? `${setPart} ${load}` : setPart;
+  });
+}
+
 export function parseXunjiWorkouts(rawTrains: XunjiRawTrain[]): {
   workouts: XunjiWorkoutSummary[];
   totalVolume: number;
@@ -164,19 +217,36 @@ export function parseXunjiWorkouts(rawTrains: XunjiRawTrain[]): {
         let doneSets = 0;
         let maxWeight = 0;
         let unit = "kg";
+        const setDetails: XunjiSetDetail[] = [];
 
         for (const s of sets) {
+          const setUnit = s.unit || "kg";
           if (s.unit) unit = s.unit;
           const isDone = s.done !== false;
           if (isDone) doneSets += 1;
 
           const w = Number(s.weight);
           const r = Number(s.reps);
-          if (Number.isFinite(w) && w > maxWeight) {
-            maxWeight = w;
+          const safeW = Number.isFinite(w) && w > 0 ? Number(w.toFixed(1)) : 0;
+          const safeR = Number.isFinite(r) && r > 0 ? Math.round(r) : 0;
+          const durationLabel =
+            s.timeLabel?.trim() ||
+            (safeR === 0 && s.time && s.time > 0 ? `${Math.round(s.time)}秒` : undefined);
+
+          setDetails.push({
+            weight: safeW,
+            reps: safeR,
+            unit: setUnit,
+            ...(s.selfWeight ? { selfWeight: true } : {}),
+            ...(durationLabel ? { durationLabel } : {}),
+            done: isDone,
+          });
+
+          if (safeW > maxWeight) {
+            maxWeight = safeW;
           }
-          if (isDone && Number.isFinite(w) && Number.isFinite(r) && w > 0 && r > 0) {
-            moveVolume += w * r;
+          if (isDone && safeW > 0 && safeR > 0) {
+            moveVolume += safeW * safeR;
           }
         }
 
@@ -188,6 +258,8 @@ export function parseXunjiWorkouts(rawTrains: XunjiRawTrain[]): {
           maxWeight: Number(maxWeight.toFixed(1)),
           volume: Math.round(moveVolume),
           unit,
+          setGroups: buildSetGroups(setDetails),
+          setDetails,
         };
       }
     );
