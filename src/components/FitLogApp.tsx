@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { SlidersHorizontal } from "lucide-react";
 import { CalendarCard } from "@/components/CalendarCard";
 import { DietCard } from "@/components/DietCard";
 import { VitalsRow } from "@/components/VitalsRow";
 import { WorkoutPlanCard } from "@/components/WorkoutPlanCard";
 import { ConnectionsDrawer } from "@/components/ConnectionsDrawer";
+import { formatLocalDate } from "@/lib/date";
 import type {
   CalendarDayMarker,
   DailyLogDTO,
@@ -145,8 +146,13 @@ export function FitLogApp({
     [showNotice, updateMarkerFromDaily]
   );
 
+  const autoSyncingRef = useRef(false);
+  const lastAutoSyncAttemptRef = useRef(0);
+
   const handleSyncWhoop = useCallback(
-    async (syncBodyWeight = false) => {
+    async (syncBodyWeight = false, silent = false) => {
+      if (autoSyncingRef.current) return;
+      autoSyncingRef.current = true;
       setSyncingWhoop(true);
       try {
         const res = await fetch("/api/whoop/sync", {
@@ -164,11 +170,14 @@ export function FitLogApp({
         handleDailyUpdated(data.daily);
         fetchCalendarMonth(selectedDate.slice(0, 7));
         refreshStatus();
-        showNotice(data.message || "WHOOP 数据已同步");
+        if (!silent) {
+          showNotice(data.message || "WHOOP 数据已同步");
+        }
       } catch (err) {
         showNotice(err instanceof Error ? err.message : "同步 WHOOP 失败", true);
       } finally {
         setSyncingWhoop(false);
+        autoSyncingRef.current = false;
       }
     },
     [
@@ -179,6 +188,48 @@ export function FitLogApp({
       showNotice,
     ]
   );
+
+  // 打开 App 或从后台切回前台时自动静默同步 WHOOP（今日无睡眠或距上次同步超过 30 分钟，且至少间隔 5 分钟防频刷）
+  useEffect(() => {
+    if (!status.whoopConnected) return;
+
+    const maybeAutoSync = () => {
+      const today = formatLocalDate();
+      if (selectedDate !== today) return;
+
+      const now = Date.now();
+      if (now - lastAutoSyncAttemptRef.current < 5 * 60_000) return;
+
+      const lastSyncedMs = status.whoopLastSyncedAt
+        ? new Date(status.whoopLastSyncedAt).getTime()
+        : 0;
+      const isStale = !lastSyncedMs || now - lastSyncedMs > 30 * 60_000;
+      const missingTodaySleep = daily.sleepMinutes === null;
+
+      if (missingTodaySleep || isStale) {
+        lastAutoSyncAttemptRef.current = now;
+        void handleSyncWhoop(false, true);
+      }
+    };
+
+    maybeAutoSync();
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        maybeAutoSync();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [
+    daily.sleepMinutes,
+    handleSyncWhoop,
+    selectedDate,
+    status.whoopConnected,
+    status.whoopLastSyncedAt,
+  ]);
 
   const handleDisconnectWhoop = useCallback(async () => {
     await fetch("/api/whoop/disconnect", { method: "POST" });

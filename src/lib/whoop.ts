@@ -165,53 +165,76 @@ export async function exchangeWhoopCode(
   });
 }
 
+const refreshInFlight = new Map<string, Promise<string>>();
+
 async function refreshWhoopToken(
   refreshToken: string,
   userId = DEFAULT_USER_ID
 ): Promise<string> {
-  const { clientId, clientSecret } = getWhoopConfig();
-  if (!clientId || !clientSecret) {
-    throw new Error("未配置 WHOOP_CLIENT_ID / WHOOP_CLIENT_SECRET");
+  // 防止同一用户并发触发两次 refresh_token 消费（WHOOP 启用单次滚动刷新令牌）
+  const inflight = refreshInFlight.get(userId);
+  if (inflight) return inflight;
+
+  const task = (async () => {
+    const { clientId, clientSecret } = getWhoopConfig();
+    if (!clientId || !clientSecret) {
+      throw new Error("未配置 WHOOP_CLIENT_ID / WHOOP_CLIENT_SECRET");
+    }
+
+    const form = new URLSearchParams({
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: clientId,
+      client_secret: clientSecret,
+      scope: "offline",
+    });
+
+    const res = await fetch(WHOOP_TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: form.toString(),
+      cache: "no-store",
+    });
+
+    const data = (await res.json().catch(() => ({}))) as WhoopTokenResponse & {
+      error_description?: string;
+      error?: string;
+    };
+
+    if (!res.ok || !data.access_token) {
+      const isInvalidToken =
+        res.status === 400 ||
+        res.status === 401 ||
+        data.error === "invalid_grant" ||
+        data.error === "invalid_request";
+      throw new Error(
+        isInvalidToken
+          ? "WHOOP 授权令牌已过期或失效，请点右上角「连接 → 断开」后重新授权连接 WHOOP"
+          : data.error_description ||
+              "WHOOP 登录状态已过期，请点右上角「连接」重新授权 WHOOP"
+      );
+    }
+
+    const expiresAt = new Date(Date.now() + (data.expires_in || 3600) * 1000);
+    await prisma.wearableConnection.update({
+      where: { userId_provider: { userId, provider: "whoop" } },
+      data: {
+        accessToken: data.access_token,
+        refreshToken: data.refresh_token ?? refreshToken,
+        expiresAt,
+        scope: data.scope ?? undefined,
+      },
+    });
+
+    return data.access_token;
+  })();
+
+  refreshInFlight.set(userId, task);
+  try {
+    return await task;
+  } finally {
+    refreshInFlight.delete(userId);
   }
-
-  const form = new URLSearchParams({
-    grant_type: "refresh_token",
-    refresh_token: refreshToken,
-    client_id: clientId,
-    client_secret: clientSecret,
-    scope: "offline",
-  });
-
-  const res = await fetch(WHOOP_TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: form.toString(),
-    cache: "no-store",
-  });
-
-  const data = (await res.json()) as WhoopTokenResponse & {
-    error_description?: string;
-    error?: string;
-  };
-
-  if (!res.ok || !data.access_token) {
-    throw new Error(
-      data.error_description || "WHOOP 登录状态已过期，请重新连接 WHOOP"
-    );
-  }
-
-  const expiresAt = new Date(Date.now() + (data.expires_in || 3600) * 1000);
-  await prisma.wearableConnection.update({
-    where: { userId_provider: { userId, provider: "whoop" } },
-    data: {
-      accessToken: data.access_token,
-      refreshToken: data.refresh_token ?? refreshToken,
-      expiresAt,
-      scope: data.scope ?? undefined,
-    },
-  });
-
-  return data.access_token;
 }
 
 export async function getValidWhoopAccessToken(

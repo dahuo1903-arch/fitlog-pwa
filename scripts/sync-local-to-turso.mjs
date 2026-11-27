@@ -123,6 +123,42 @@ async function syncLocalRows() {
       continue;
     }
 
+    // 防止本地较早的旧 OAuth refresh_token 覆盖云端已滚动更新的新令牌
+    if (table === "WearableConnection") {
+      const existingRemote = await remote.execute(
+        `SELECT "userId", "provider", "expiresAt" FROM "WearableConnection"`
+      );
+      const remoteExpires = new Map();
+      for (const r of existingRemote.rows) {
+        remoteExpires.set(`${r.userId}:${r.provider}`, Number(r.expiresAt || 0));
+      }
+
+      const columns = res.columns;
+      const quotedCols = columns.map((c) => `"${c}"`).join(", ");
+      const placeholders = columns.map(() => "?").join(", ");
+      const sql = `INSERT OR REPLACE INTO "WearableConnection" (${quotedCols}) VALUES (${placeholders})`;
+
+      const batch = [];
+      let skipped = 0;
+      for (const row of res.rows) {
+        const key = `${row.userId}:${row.provider}`;
+        const rExp = remoteExpires.get(key);
+        const lExp = Number(row.expiresAt || 0);
+        if (rExp !== undefined && rExp >= lExp) {
+          skipped += 1;
+          continue;
+        }
+        batch.push({ sql, args: columns.map((col) => row[col] ?? null) });
+      }
+      if (batch.length > 0) {
+        await remote.batch(batch, "write");
+      }
+      console.log(
+        `   ✓ WearableConnection: 已同步 ${batch.length} 条，跳过 ${skipped} 条（保护云端较新令牌）`
+      );
+      continue;
+    }
+
     const columns = res.columns;
     const quotedCols = columns.map((c) => `"${c}"`).join(", ");
     const placeholders = columns.map(() => "?").join(", ");
