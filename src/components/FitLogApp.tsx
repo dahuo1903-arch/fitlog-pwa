@@ -290,7 +290,15 @@ export function FitLogApp({
         onMonthChange={fetchCalendarMonth}
       />
 
-      {/* 2. 今日饮食（Gemini 自然语言/拍照 + 手动） */}
+      {/* 2. 健身计划（手动计划 + 训记同步） */}
+      <WorkoutPlanCard
+        daily={daily}
+        xunjiConfigured={status.xunjiConfigured}
+        onDailyUpdated={handleDailyUpdated}
+        onNotice={showNotice}
+      />
+
+      {/* 3. 今日饮食（Gemini 自然语言/拍照 + 手动） */}
       <DietCard
         daily={daily}
         geminiConfigured={status.geminiConfigured}
@@ -298,21 +306,13 @@ export function FitLogApp({
         onNotice={showNotice}
       />
 
-      {/* 3. 体重 & 4. 睡眠时间 */}
+      {/* 4. 体重 & 5. 睡眠时间 */}
       <VitalsRow
         daily={daily}
         whoopConnected={status.whoopConnected}
         onDailyUpdated={handleDailyUpdated}
         onSyncWhoop={() => handleSyncWhoop(false)}
         syncingWhoop={syncingWhoop}
-        onNotice={showNotice}
-      />
-
-      {/* 5. 健身计划（手动计划 + 训记同步） */}
-      <WorkoutPlanCard
-        daily={daily}
-        xunjiConfigured={status.xunjiConfigured}
-        onDailyUpdated={handleDailyUpdated}
         onNotice={showNotice}
       />
 
